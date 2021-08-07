@@ -1,0 +1,13 @@
+status
+sleep 2
+pause 1
+sleep 2
+status
+sleep 2
+stop 3
+sleep 2
+status
+stop 1
+sleep 2
+status
+exit
