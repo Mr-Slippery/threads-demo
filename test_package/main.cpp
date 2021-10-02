@@ -12,14 +12,10 @@
 #include <chrono>
 #include <vector>
 #include <set>
+#include <algorithm>
 #include <unordered_map>
 
-enum class thread_state: uint8_t {
-    PAUSED,
-    RUNNING,
-    STOPPING,
-    TERMINATED
-};
+#include "thread_state.h"
 
 using proc_state = int;
 
@@ -30,35 +26,64 @@ bool is_finished(proc_state state)
     return (state < LOWER_LIMIT || state > UPPER_LIMIT);
 }
 
-void control_thread(
-    std::vector<thread_state>& run_states,
-    std::vector<std::mutex>& mutexes,
-    std::vector<std::condition_variable>& cvs,
-    std::vector<proc_state>& states
-)
-{
+std::tuple<std::string, std::string, std::size_t, std::size_t> read_command(const std::set<std::string>& commands, const std::set<std::string>& no_id_commands) {
+#ifdef __unix__
+        std::string full_cmd;
+#endif // __unix__
+        std::string cmd;
+        std::size_t supplied_id;
+        std::string orig_id;
+        std::size_t id;
+        for (;;) {
+            if (std::cin.eof()) {
+                return std::make_tuple(cmd, orig_id, id, supplied_id);
+            }
+            std::cout << "> " << std::flush;
+            std::cin >> cmd;
+            if (commands.find(cmd) == commands.end()) {
+                std::cerr << "Unknown command: " << cmd << std::endl;
+                std::cin.clear();
+                std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+                continue;
+            }
+#ifdef __unix__
+            full_cmd = cmd;
+#endif // __unix__
+            if (no_id_commands.find(cmd) != no_id_commands.end()) {
+                break;
+            }
+            if (!(std::cin >> supplied_id)) {
+                std::cerr << "Non-numeric worker id for " << cmd << " command." << std::endl;
+                std::cin.clear();
+                std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+                continue;
+            }
+            orig_id = std::to_string(supplied_id);
+#ifdef __unix__
+            full_cmd += " " + orig_id;
+#endif // __unix__
+            id = supplied_id - 1;
+            break;
+        }
+#ifdef __unix__
+        if (!isatty(fileno(stdin))) {
+            std::cout << full_cmd << std::endl;
+        }
+#endif // __unix__
+        return std::make_tuple(cmd, orig_id, id, supplied_id);
+}
+
+std::unordered_map<thread_state, std::string> get_run_state_names() {
     std::unordered_map<thread_state, std::string> run_state_names ({
         { thread_state::PAUSED, "paused" },
         { thread_state::RUNNING, "running" },
         { thread_state::STOPPING, "stopped" },
         { thread_state::TERMINATED, "finished" }
     });
-    constexpr auto help = "help";
-    constexpr auto resume = "resume";
-    constexpr auto pause = "pause";
-    constexpr auto stop = "stop";
-    constexpr auto status = "status";
-    constexpr auto exit = "exit";
-    constexpr auto sleep = "sleep"; // extra command for testing
-    const std::set<std::string> commands = {
-        resume
-        , help
-        , stop
-        , pause
-        , status
-        , exit
-        , sleep
-    };
+    return run_state_names;
+}
+
+constexpr auto get_help_text() {
     constexpr auto help_text = R""""(
   pause <thread_id>
   - pauses the thread with the given id and prints a confirmation message.
@@ -75,50 +100,41 @@ void control_thread(
   sleep <n_seconds>
   - (extra command) puts the controller thread to sleep for <n_seconds>.
     )"""";
+    return help_text;
+}
+
+void control_thread(
+    std::vector<thread_state>& run_states,
+    std::vector<std::mutex>& mutexes,
+    std::vector<std::condition_variable>& cvs,
+    std::vector<proc_state>& states
+)
+{
+    const auto run_state_names = get_run_state_names();
+    constexpr auto help_text = get_help_text();
+
+    constexpr auto help = "help";
+    constexpr auto resume = "resume";
+    constexpr auto pause = "pause";
+    constexpr auto stop = "stop";
+    constexpr auto status = "status";
+    constexpr auto exit = "exit";
+    constexpr auto sleep = "sleep"; // extra command for testing
+    const std::set<std::string> no_id_commands = {
+        help
+        , status
+        , exit
+    };
+    const std::set<std::string> id_commands = {
+        resume
+        , stop
+        , pause
+        , sleep
+    };
+    std::set<std::string> commands(id_commands);
+    commands.insert(no_id_commands.begin(), no_id_commands.end());
     for (;;) {
-#ifdef __unix__
-        std::string full_cmd;
-#endif // __unix__
-        std::string cmd;
-        std::size_t supplied_id;
-        std::size_t id;
-        for (;;) {
-            if (std::cin.eof()) {
-                return;
-            }
-            std::cout << "> " << std::flush;
-            std::cin >> cmd;
-            if (commands.find(cmd) == commands.end()) {
-                std::cerr << "Unknown command: " << cmd << std::endl;
-                std::cin.clear();
-                std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
-                continue;
-            }
-#ifdef __unix__
-            full_cmd = cmd;
-#endif // __unix__
-            if (cmd == exit
-                || cmd == status
-                || cmd == help) {
-                break;
-            }
-            if (!(std::cin >> supplied_id)) {
-                std::cerr << "Non-numeric worker id for " << cmd << " command." << std::endl;
-                std::cin.clear();
-                std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
-                continue;
-            }
-#ifdef __unix__
-            full_cmd += " " + std::to_string(supplied_id);
-#endif // __unix__
-            id = supplied_id - 1;
-            break;
-        }
-#ifdef __unix__
-        if (!isatty(fileno(stdin))) {
-            std::cout << full_cmd << std::endl;
-        }
-#endif // __unix__
+        auto [cmd, orig_id, id, supplied_id] = read_command(commands, no_id_commands);
         if (cmd == help) {
             std::cout << help_text << std::endl;
             continue;
@@ -129,7 +145,7 @@ void control_thread(
         }
         const auto n_threads = run_states.size();
         if (cmd != exit && cmd != status && id >= n_threads) {
-            std::cerr << "Invalid worker id: " << supplied_id << std::endl;
+            std::cerr << "Invalid worker id: " << orig_id << std::endl;
             continue;
         }
         if (cmd == exit || cmd == status) {
@@ -157,7 +173,7 @@ void control_thread(
             }
             if (cmd == status) {
                 for(auto i = 0; i < n_threads; ++i) {
-                    std::cout << (i + 1) << " " << run_state_names[run_states[i]] << " " << states[i] << std::endl;                    
+                    std::cout << (i + 1) << " " << run_state_names.find(run_states[i])->second << " " << states[i] << std::endl;                    
                 }
                 for (auto& m: mutexes) {
                     m.unlock();       
@@ -261,22 +277,24 @@ int main(int argc, char *argv[])
 
     for (auto id = 0; id < n_threads; ++id) {
         const auto work = (id % 2) ? increment: decrement;
-        threads.emplace_back(std::thread([work, &cvs, &run_states, &mutexes, &states](int id)
+        auto& run_state = run_states[id];
+        auto& cv = cvs[id];
+        auto& mtx = mutexes[id];
+        auto& state = states[id];
+        threads.emplace_back(std::thread([work, &cv, &run_state, &mtx, &state](int id)
         {
             for (;;) {
                 constexpr auto SLEEP_TIME = 100u;
                 std::this_thread::sleep_for(std::chrono::milliseconds(SLEEP_TIME));
                 {
-                    std::unique_lock<std::mutex> l(mutexes[id]);
-                    auto& run_state = run_states[id];
-                    cvs[id].wait(l, [&run_state]() { 
+                    std::unique_lock<std::mutex> l(mtx);
+                    cv.wait(l, [&run_state]() { 
                         return
                             run_state == thread_state::RUNNING
                             || run_state == thread_state::STOPPING
                         ;
                     });
-                    if (run_state == thread_state::RUNNING) {
-                        auto& state = states[id]; 
+                    if (run_state == thread_state::RUNNING) { 
                         if (is_finished(state)) {
                             run_state = thread_state::TERMINATED;
                             return;

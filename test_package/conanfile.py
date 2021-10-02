@@ -6,7 +6,7 @@ from conans import ConanFile, CMake, tools
 class ComputeTestConan(ConanFile):
     settings = "os", "compiler", "build_type", "arch"
     generators = "cmake"
-    build_requires = "gtest/1.8.1"
+    build_requires = "gtest/1.10.0"
 
     def build(self):
         cmake = CMake(self)
