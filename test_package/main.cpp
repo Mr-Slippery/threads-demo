@@ -191,8 +191,13 @@ void control_thread(
                 continue;
             }
             if (cmd == pause) {
-                run_state = thread_state::PAUSED;
-                cvs[id].notify_one();
+                if (run_state != thread_state::TERMINATED &&
+                    run_state != thread_state::STOPPING) {
+                    run_state = thread_state::PAUSED;
+                    cvs[id].notify_one();
+                } else {
+                    std::cerr << "Thread " << supplied_id << " has been terminated." << std::endl;
+                }
                 continue;
             }
             if (cmd == resume) {
